@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Midnight Manhattan — Voxel City</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#02030a;overflow:hidden;font-family:ui-monospace,monospace;color:#cfd6e6}
+  canvas{display:block}
+  #hud{position:fixed;left:16px;bottom:16px;font-size:12px;letter-spacing:.18em;opacity:.75;text-transform:uppercase;pointer-events:none}
+  #hud b{color:#ffb84a}
+  #help{position:fixed;right:16px;bottom:16px;font-size:11px;opacity:.6;pointer-events:none;text-align:right}
+</style>
+</head>
+<body>
+<div id="hud">Midnight Manhattan · voxel night <b>● live</b></div>
+<div id="help">C = camera mode · V = voxel view</div>
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x03050d);
+scene.fog = new THREE.FogExp2(0x0a1226, 0.013);
+
+const camera = new THREE.PerspectiveCamera(52, innerWidth/innerHeight, 0.1, 600);
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth,innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.08;
+document.body.prepend(renderer.domElement);
+
+scene.add(new THREE.AmbientLight(0x1a2544, 0.3));
+const moonL = new THREE.DirectionalLight(0x9bb7ff, 0.6);
+moonL.position.set(-40,90,-60); scene.add(moonL);
+scene.add(new THREE.HemisphereLight(0x2a3a6a, 0x05060a, 0.2));
+
+const asphaltMat = new THREE.MeshStandardMaterial({color:0x0a0c12,roughness:0.98,metalness:0.05});
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(400,400),asphaltMat);
+ground.rotation.x=-Math.PI/2; scene.add(ground);
+
+const curbMat = new THREE.MeshBasicMaterial({color:0x2a3140});
+for(let i=-180;i<=180;i+=20){
+  const h=new THREE.Mesh(new THREE.BoxGeometry(400,0.3,0.5),curbMat); h.position.set(0,0.15,i); scene.add(h);
+  const v=new THREE.Mesh(new THREE.BoxGeometry(0.5,0.3,400),curbMat); v.position.set(i,0.15,0); scene.add(v);
+}
+
+const buildingColors = [0x1a1f2c,0x141824,0x1f2433,0x171c28,0x222838,0x12161f,0x1c2030];
+const windowColors = [0xffe2a6,0xffd07a,0xffffff,0xaecbff,0xffb06a,0x88aaff,0xff9966];
+const windowMats = windowColors.map((c,i)=>{const m=new THREE.MeshStandardMaterial({color:c,emissive:c,emissiveIntensity:1.5,roughness:0.2,metalness:0.1}); m.userData.phase=Math.random()*6.28; m.userData.speed=0.6+Math.random()*0.9; return m;});
+
+const winGeo = new THREE.BoxGeometry(0.6,0.75,0.06);
+const winByMat = new Map();
+function regWindow(mat, m4){ if(!winByMat.has(mat)) winByMat.set(mat,[]); winByMat.get(mat).push(m4); }
+const tmpM = new THREE.Matrix4(), tmpQ=new THREE.Quaternion(), tmpV=new THREE.Vector3(), WIN_BATCH=4000;
+
+function addBuilding(cx,cz,w,d){
+  w=Math.max(6,Math.round(w)); d=Math.max(6,Math.round(d));
+  // voxel-ish height: integer
+  let h = 6 + Math.floor(Math.random()*26);
+  if(Math.abs(cx)<24 && Math.abs(cz)<24) h += Math.floor(Math.random()*18);
+  const col = buildingColors[Math.floor(Math.random()*buildingColors.length)];
+  // setbacks for tall
+  const segs = h>22 ? [Math.floor(h*0.55), Math.floor(h*0.3), h-Math.floor(h*0.85)] : [h];
+  let y=0; let curW=w, curD=d;
+  segs.forEach((sh,i)=>{
+    const shrink = i===1?2:(i===2?4:0);
+    const bw=Math.max(4,curW-shrink), bd=Math.max(4,curD-shrink);
+    const mat = new THREE.MeshStandardMaterial({color:col,roughness:0.88,metalness:0.12});
+    const m = new THREE.Mesh(new THREE.BoxGeometry(bw,sh,bd),mat);
+    m.position.set(cx,y+sh/2,cz); scene.add(m);
+    const roof = new THREE.Mesh(new THREE.BoxGeometry(bw+0.3,0.5,bd+0.3), new THREE.MeshStandardMaterial({color:0x0d1016,roughness:0.9}));
+    roof.position.set(cx,y+sh+0.25,cz); scene.add(roof);
+    // windows on vertical faces for this segment
+    const xStep=1.5, yStep=1.7;
+    const halfH=[bw/2,bd/2];
+    const faces=[
+      {axis:'x',sign:1,span:bd, bw:bw},
+      {axis:'x',sign:-1,span:bd, bw:bw},
+      {axis:'z',sign:1,span:bw, bw:bd},
+      {axis:'z',sign:-1,span:bw, bw:bd},
+    ];
+    faces.forEach(f=>{
+      const n=Math.floor(f.span/xStep);
+      for(let yi=1; yi*yStep < sh-0.8; yi++){
+        for(let xi=0; xi<n; xi++){
+          if(Math.random()<0.4) continue;
+          const along=(xi-(n-1)/2)*xStep;
+          const yy=y+yi*yStep;
+          const matW=windowMats[Math.floor(Math.random()*windowMats.length)];
+          const spanDepth=(f.axis==='x'?bw:bd)/2;
+          let px=cx,pz=cz;
+          const norm=spanDepth+0.05;
+          if(f.axis==='x'){px=cx+f.sign*norm; pz=cz+along;}
+          else {pz=cz+f.sign*norm; px=cx+along;}
+          tmpQ.setFromAxisAngle(new THREE.Vector3(0,1,0), f.axis==='x'?(f.sign>0?0:Math.PI):(f.sign>0?-Math.PI/2:Math.PI/2));
+          tmpM.makeRotationFromQuaternion(tmpQ);
+          tmpV.set(px,yy,pz); tmpM.setPosition(tmpV);
+          regWindow(matW,tmpM.clone());
+        }
+      }
+    });
+    y+=sh; curW=bw; curD=bd;
+  });
+}
+
+const block=22;
+for(let gx=-7;gx<=7;gx++){
+  for(let gz=-7;gz<=7;gz++){
+    if(gx===0 && Math.abs(gz)<3) continue;
+    if(gz===0 && Math.abs(gx)<3) continue;
+    const cx=gx*block+(Math.random()-0.5)*2;
+    const cz=gz*block+(Math.random()-0.5)*2;
+    const w=7+Math.random()*10;
+    const d=7+Math.random()*10;
+    addBuilding(cx,cz,w,d);
+  }
+}
+
+function tower(cx,cz,segments){
+  let y=0;
+  segments.forEach(seg=>{
+    const m=new THREE.Mesh(new THREE.BoxGeometry(seg.w,seg.h,seg.w), new THREE.MeshStandardMaterial({color:0x1b2030,roughness:0.75,metalness:0.2}));
+    m.position.set(cx,y+seg.h/2,cz); scene.add(m);
+    const roof=new THREE.Mesh(new THREE.BoxGeometry(seg.w+0.4,0.5,seg.w+0.4), new THREE.MeshStandardMaterial({color:0x0d1016,roughness:0.9}));
+    roof.position.set(cx,y+seg.h+0.25,cz); scene.add(roof);
+    y+=seg.h;
+  });
+  const ant=new THREE.Mesh(new THREE.CylinderGeometry(0.2,0.2,16,6), new THREE.MeshBasicMaterial({color:0xffffff}));
+  ant.position.set(cx,y+8,cz); scene.add(ant);
+  const beacon=new THREE.PointLight(0xff4444,3,50); beacon.position.set(cx,y+16,cz); scene.add(beacon);
+}
+tower(10,-8,[{w:16,h:28},{w:12,h:20},{w:8,h:15},{w:4,h:12}]);
+
+const ch=[[18,14],[14,12],[10,10],[6,8],[4,6]];
+let cy=0;
+ch.forEach(s=>{
+  const m=new THREE.Mesh(new THREE.BoxGeometry(s[0],s[1],s[0]), new THREE.MeshStandardMaterial({color:0x1c2336,roughness:0.7,metalness:0.25}));
+  m.position.set(-24,cy+s[1]/2,14); scene.add(m); cy+=s[1];
+});
+const spire=new THREE.Mesh(new THREE.ConeGeometry(2,16,8), new THREE.MeshBasicMaterial({color:0xcfd6e6}));
+spire.position.set(-24,cy+8,14); scene.add(spire);
+
+// windows instanced
+winByMat.forEach((arr,mat)=>{
+  for(let i=0;i<arr.length;i+=WIN_BATCH){
+    const chunk=arr.slice(i,i+WIN_BATCH);
+    const im=new THREE.InstancedMesh(winGeo,mat,chunk.length);
+    chunk.forEach((m4,idx)=>im.setMatrixAt(idx,m4));
+    im.instanceMatrix.needsUpdate=true; scene.add(im);
+  }
+});
+
+// Streetlights (pooled fewer)
+const poleMat=new THREE.MeshStandardMaterial({color:0x3a404f,metalness:0.6,roughness:0.4});
+const lampMat=new THREE.MeshStandardMaterial({color:0xffe2a6,emissive:0xffe2a6,emissiveIntensity:2.2});
+const lampPositions=[];
+for(let gx=-7;gx<=7;gx++){
+  for(let gz=-7;gz<=7;gz++){
+    if(Math.random()<0.72) continue;
+    const x=gx*22+(Math.random()-0.5)*6;
+    const z=gz*22+(Math.random()-0.5)*6;
+    lampPositions.push({x,z});
+    const pole=new THREE.Mesh(new THREE.CylinderGeometry(0.15,0.22,10,6),poleMat);
+    pole.position.set(x,5,z); scene.add(pole);
+    const lamp=new THREE.Mesh(new THREE.SphereGeometry(0.5,8,8),lampMat);
+    lamp.position.set(x,10.6,z); scene.add(lamp);
+  }
+}
+// point lights only for a subset to save perf
+lampPositions.forEach((p,i)=>{
+  if(i%3!==0) return;
+  const pl=new THREE.PointLight(0xffd07a,1.1,32,2); pl.position.set(p.x,10.6,p.z); scene.add(pl);
+});
+
+// Neon signs on buildings
+function makeSign(text,color){
+  const c=document.createElement('canvas'); c.width=256; c.height=64;
+  const ctx=c.getContext('2d');
+  ctx.fillStyle='rgba(4,6,14,0.85)'; ctx.fillRect(0,0,256,64);
+  ctx.font='bold 34px ui-monospace, monospace'; ctx.textAlign='center'; ctx.textBaseline='middle';
+  ctx.shadowColor=color; ctx.shadowBlur=18; ctx.fillStyle=color; ctx.fillText(text,128,32);
+  const tex=new THREE.CanvasTexture(c); tex.needsUpdate=true;
+  const mat=new THREE.MeshBasicMaterial({map:tex,transparent:true,blending:THREE.AdditiveBlending});
+  const mesh=new THREE.Mesh(new THREE.PlaneGeometry(9,2.2),mat);
+  return mesh;
+}
+const signs=[['BAR',0xff3366],['HOTEL',0x44ccff],['PIZZA',0xffaa33],['OPEN 24H',0x66ff99],['CAB',0xffff66],['Bodega',0xff66ff]];
+signs.forEach(([t,col])=>{
+  const s=makeSign(t,`#${col.toString(16).padStart(6,'0')}`);
+  // place randomly near grid
+  const bx=(Math.floor(Math.random()*7)-3)*22;
+  const bz=(Math.floor(Math.random()*7)-3)*22;
+  const y=4+Math.random()*18;
+  s.position.set(bx+11, y, bz);
+  s.rotation.y=Math.random()<0.5?Math.PI/2:-Math.PI/2;
+  scene.add(s);
+});
+
+// Cars
+const carGeo=new THREE.BoxGeometry(2,0.9,4.2);
+const carColors=[0xee3333,0x111111,0xf5f5f5,0xffb000,0x2a4fa3,0x666666,0x33cc66];
+const carGroups=carColors.map(c=>({mat:new THREE.MeshStandardMaterial({color:c,roughness:0.4,metalness:0.5}),mesh:null,idxs:[]}));
+carGroups.forEach(g=>{g.mesh=new THREE.InstancedMesh(carGeo,g.mat,0); scene.add(g.mesh);});
+
+// car trails
+const trailGeo=new THREE.BoxGeometry(0.25,0.08,1.6);
+const trailMat=new THREE.MeshBasicMaterial({color:0xffee99,transparent:true,opacity:0.55,blending:THREE.AdditiveBlending});
+const trailMesh=new THREE.InstancedMesh(trailGeo,trailMat,0);
+scene.add(trailMesh);
+
+const paths=[];
+for(let i=-7;i<=7;i++){paths.push({type:'h',z:i*22}); paths.push({type:'v',x:i*22});}
+const cars=[];
+for(let i=0;i<160;i++){
+  const p=paths[Math.floor(Math.random()*paths.length)];
+  const lane=(Math.random()<0.5?-3:3);
+  const g=carGroups[Math.floor(Math.random()*carGroups.length)];
+  const car={group:g,path:p,t:(Math.random()-0.5)*320,speed:9+Math.random()*18,lane:lane};
+  car.instanceIdx=g.idxs.length; g.idxs.push(car); cars.push(car);
+  car.trailIdx=i;
+}
+carGroups.forEach(g=>{g.mesh.count=g.idxs.length;});
+trailMesh.count=cars.length;
+
+const tmpM2=new THREE.Matrix4(), tmpT=new THREE.Matrix4();
+function updateCars(dt){
+  cars.forEach((c,i)=>{
+    c.t += c.speed*dt;
+    if(c.t>170) c.t=-170;
+    let x,z,rot;
+    if(c.path.type==='h'){x=c.t;z=c.path.z+c.lane;rot=0;}
+    else {z=c.t;x=c.path.x+c.lane;rot=Math.PI/2;}
+    tmpM2.makeRotationY(rot); tmpM2.setPosition(x,0.45,z);
+    c.group.mesh.setMatrixAt(c.instanceIdx,tmpM2);
+    // trail
+    const tx=x-Math.sin(rot)*2.6, tz=z-Math.cos(rot)*2.6;
+    tmpT.makeRotationY(rot); tmpT.setPosition(tx,0.35,tz);
+    trailMesh.setMatrixAt(i,tmpT);
+  });
+  carGroups.forEach(g=>{if(g.idxs.length) g.mesh.instanceMatrix.needsUpdate=true;});
+  trailMesh.instanceMatrix.needsUpdate=true;
+}
+
+// Stars
+const starGeo=new THREE.BufferGeometry();
+const starPos=new Float32Array(1800*3);
+for(let i=0;i<1800;i++){starPos[i*3]=(Math.random()-0.5)*800; starPos[i*3+1]=60+Math.random()*260; starPos[i*3+2]=(Math.random()-0.5)*800;}
+starGeo.setAttribute('position',new THREE.BufferAttribute(starPos,3));
+scene.add(new THREE.Points(starGeo,new THREE.PointsMaterial({color:0xffffff,size:0.6,transparent:true,opacity:0.85,sizeAttenuation:true})));
+
+const moonMesh=new THREE.Mesh(new THREE.SphereGeometry(7,24,24), new THREE.MeshBasicMaterial({color:0xeef2ff}));
+moonMesh.position.set(-110,120,-150); scene.add(moonMesh);
+const moonGlow=new THREE.Mesh(new THREE.SphereGeometry(12,24,24), new THREE.MeshBasicMaterial({color:0x9bb7ff,transparent:true,opacity:0.06}));
+moonGlow.position.copy(moonMesh.position); scene.add(moonGlow);
+
+const rainGeo=new THREE.BufferGeometry();
+const rainPos=new Float32Array(1200*3);
+for(let i=0;i<1200;i++){rainPos[i*3]=(Math.random()-0.5)*260; rainPos[i*3+1]=Math.random()*100; rainPos[i*3+2]=(Math.random()-0.5)*260;}
+rainGeo.setAttribute('position',new THREE.BufferAttribute(rainPos,3));
+const rain=new THREE.Points(rainGeo,new THREE.PointsMaterial({color:0xaabbdd,size:0.12,transparent:true,opacity:0.32}));
+scene.add(rain);
+
+const clock=new THREE.Clock();
+let mx=0,my=0;
+addEventListener('mousemove',e=>{mx=(e.clientX/innerWidth-0.5); my=(e.clientY/innerHeight-0.5);});
+
+let camMode=0; // 0 orbit, 1 cinematic street, 2 high
+addEventListener('keydown',e=>{
+  if(e.key==='c'||e.key==='C') camMode=(camMode+1)%3;
+});
+
+const orbitR=125, orbitH=42; let orbitAng=0.4;
+function animate(){
+  requestAnimationFrame(animate);
+  const dt=Math.min(clock.getDelta(),0.05);
+  const t=clock.elapsedTime;
+  updateCars(dt);
+  const rp=rain.geometry.attributes.position.array;
+  for(let i=0;i<1200;i++){rp[i*3+1]-=dt*26;if(rp[i*3+1]<0){rp[i*3+1]=100;rp[i*3]=(Math.random()-0.5)*260;rp[i*3+2]=(Math.random()-0.5)*260;}}
+  rain.geometry.attributes.position.needsUpdate=true;
+
+  // window flicker
+  windowMats.forEach(m=>{
+    m.emissiveIntensity=1.3+Math.sin(t*m.userData.speed+m.userData.phase)*0.55;
+  });
+
+  orbitAng += dt*0.03;
+  const r=orbitR+mx*5;
+  if(camMode===0){
+    camera.position.x=Math.cos(orbitAng)*r;
+    camera.position.z=Math.sin(orbitAng)*r;
+    camera.position.y=orbitH+my*6;
+    camera.lookAt(0,18,0);
+  } else if(camMode===1){
+    const a=orbitAng*0.4;
+    camera.position.set(Math.cos(a)*55+my*4, 9+mx*2, Math.sin(a)*55);
+    camera.lookAt(0,12+mx*3, 0);
+  } else {
+    camera.position.set(0,120+my*10, 1+mx*4);
+    camera.lookAt(0,0,0);
+  }
+  renderer.render(scene,camera);
+}
+animate();
+
+addEventListener('resize',()=>{
+  camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+});
+</script>
+</body>
+</html>
+EOF
+echo written
