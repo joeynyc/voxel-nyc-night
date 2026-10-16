@@ -14,7 +14,19 @@
 </head>
 <body>
 <div id="hud">Midnight Manhattan · voxel night <b>● live</b></div>
-<div id="help">C = camera mode · V = voxel view</div>
+<div id="help">Drag=orbit · RMB/Shift=pan · wheel=zoom · 1/2/3 keys</div>
+<div id="camctl">
+  <button onclick="setCamPreset('street')">Street</button>
+  <button onclick="setCamPreset('bird')">Bird</button>
+  <button onclick="setCamPreset('aerial')">Aerial</button>
+  <button onclick="setCamPreset('auto')">Auto rotate</button>
+  <button onclick="setCamPreset('reset')">Reset</button>
+</div>
+<style>
+#camctl{position:fixed;right:16px;top:16px;display:flex;gap:6px;z-index:5;}
+#camctl button{background:rgba(10,16,26,.72);color:#cfd6e6;border:1px solid #3a4150;padding:6px 9px;font-size:11px;letter-spacing:.1em;cursor:pointer;font-family:ui-monospace,monospace;}
+#camctl button:hover{background:rgba(40,54,80,.85);}
+</style>
 <script type="module">
 import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
 
@@ -261,16 +273,41 @@ rainGeo.setAttribute('position',new THREE.BufferAttribute(rainPos,3));
 const rain=new THREE.Points(rainGeo,new THREE.PointsMaterial({color:0xaabbdd,size:0.12,transparent:true,opacity:0.32}));
 scene.add(rain);
 
-const clock=new THREE.Clock();
-let mx=0,my=0;
-addEventListener('mousemove',e=>{mx=(e.clientX/innerWidth-0.5); my=(e.clientY/innerHeight-0.5);});
-
-let camMode=0; // 0 orbit, 1 cinematic street, 2 high
-addEventListener('keydown',e=>{
-  if(e.key==='c'||e.key==='C') camMode=(camMode+1)%3;
+const clock = new THREE.Clock();
+const target = new THREE.Vector3(0,18,0);
+let camRadius=125, camTheta=0.4, camPhi=Math.PI/2-0.35;
+let autoRotate=false;
+let isDown=false, dragButton=0, lastX=0, lastY=0;
+const dom=renderer.domElement;
+dom.style.cursor='grab';
+dom.addEventListener('mousedown',e=>{isDown=true;dragButton=e.button;lastX=e.clientX;lastY=e.clientY;dom.style.cursor='grabbing';});
+window.addEventListener('mouseup',()=>{isDown=false;dom.style.cursor='grab';});
+window.addEventListener('mousemove',e=>{
+  if(isDown){
+    const dx=e.clientX-lastX, dy=e.clientY-lastY; lastX=e.clientX; lastY=e.clientY;
+    if(dragButton===0){ camTheta -= dx*0.006; camPhi -= dy*0.006; camPhi=Math.max(0.08,Math.min(Math.PI-0.08,camPhi)); }
+    else { target.x -= dx*0.05; target.y += dy*0.05; }
+  }
 });
-
-const orbitR=125, orbitH=42; let orbitAng=0.4;
+dom.addEventListener('contextmenu',e=>e.preventDefault());
+dom.addEventListener('wheel',e=>{ e.preventDefault(); camRadius*=1+e.deltaY*0.0012; camRadius=Math.max(18,Math.min(320,camRadius)); },{passive:false});
+let touch0=null;
+dom.addEventListener('touchstart',e=>{ if(e.touches.length===1) touch0={x:e.touches[0].clientX,y:e.touches[0].clientY}; },{passive:true});
+dom.addEventListener('touchmove',e=>{ if(e.touches.length===1 && touch0){ const dx=e.touches[0].clientX-touch0.x, dy=e.touches[0].clientY-touch0.y; touch0={x:e.touches[0].clientX,y:e.touches[0].clientY}; camTheta -= dx*0.008; camPhi -= dy*0.008; camPhi=Math.max(0.08,Math.min(Math.PI-0.08,camPhi)); } },{passive:true});
+addEventListener('keydown',e=>{
+  if(e.code==='Space'){ autoRotate=!autoRotate; }
+  if(e.key==='1'){ camTheta=0.4; camPhi=Math.PI/2-0.35; camRadius=125; target.set(0,18,0); }
+  if(e.key==='2'){ camTheta=0; camPhi=0.6; camRadius=55; target.set(0,12,0); }
+  if(e.key==='3'){ camTheta=0; camPhi=0.25; camRadius=200; target.set(0,0,0); }
+  if(e.key==='r'||e.key==='R'){ camTheta=0.4; camPhi=Math.PI/2-0.35; camRadius=125; target.set(0,18,0); autoRotate=false; }
+});
+window.setCamPreset=(name)=>{
+  if(name==='street'){ camTheta=0; camPhi=0.6; camRadius=55; target.set(0,12,0); }
+  else if(name==='bird'){ camTheta=0.8; camPhi=0.8; camRadius=140; target.set(0,18,0); }
+  else if(name==='aerial'){ camTheta=0; camPhi=0.25; camRadius=240; target.set(0,0,0); autoRotate=false; }
+  else if(name==='auto'){ autoRotate=!autoRotate; }
+  else if(name==='reset'){ camTheta=0.4; camPhi=Math.PI/2-0.35; camRadius=125; target.set(0,18,0); autoRotate=false; }
+};
 function animate(){
   requestAnimationFrame(animate);
   const dt=Math.min(clock.getDelta(),0.05);
@@ -279,27 +316,11 @@ function animate(){
   const rp=rain.geometry.attributes.position.array;
   for(let i=0;i<1200;i++){rp[i*3+1]-=dt*26;if(rp[i*3+1]<0){rp[i*3+1]=100;rp[i*3]=(Math.random()-0.5)*260;rp[i*3+2]=(Math.random()-0.5)*260;}}
   rain.geometry.attributes.position.needsUpdate=true;
-
-  // window flicker
-  windowMats.forEach(m=>{
-    m.emissiveIntensity=1.3+Math.sin(t*m.userData.speed+m.userData.phase)*0.55;
-  });
-
-  orbitAng += dt*0.03;
-  const r=orbitR+mx*5;
-  if(camMode===0){
-    camera.position.x=Math.cos(orbitAng)*r;
-    camera.position.z=Math.sin(orbitAng)*r;
-    camera.position.y=orbitH+my*6;
-    camera.lookAt(0,18,0);
-  } else if(camMode===1){
-    const a=orbitAng*0.4;
-    camera.position.set(Math.cos(a)*55+my*4, 9+mx*2, Math.sin(a)*55);
-    camera.lookAt(0,12+mx*3, 0);
-  } else {
-    camera.position.set(0,120+my*10, 1+mx*4);
-    camera.lookAt(0,0,0);
-  }
+  windowMats.forEach(m=>{ m.emissiveIntensity=1.3+Math.sin(t*m.userData.speed+m.userData.phase)*0.55; });
+  if(autoRotate) camTheta += dt*0.25;
+  const pos=new THREE.Vector3().setFromSphericalCoords(camRadius,camPhi,camTheta).add(target);
+  camera.position.copy(pos);
+  camera.lookAt(target);
   renderer.render(scene,camera);
 }
 animate();
@@ -311,5 +332,3 @@ addEventListener('resize',()=>{
 </script>
 </body>
 </html>
-EOF
-echo written
